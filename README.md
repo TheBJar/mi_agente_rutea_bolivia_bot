@@ -1,3 +1,22 @@
+# Asistente Turístico y Guía de Viajes de Bolivia (@Rutea_Bolivia_Bot)
+
+**Bot de Telegram:** [@Rutea_Bolivia_Bot](https://t.me/Rutea_Bolivia_Bot)  
+**Trabajo final del curso «Más allá de los chatbots» (Alex Ojeda Copa)**
+
+### Personalización y características añadidas:
+- **Tema:** Asistente especializado en turismo y viajes por Bolivia (destinos, rutas, clima, historia y presupuestos).
+- **RAG con Guías Turísticas Oficiales (PDF):** Base vectorial con ChromaDB que indexa guías de Bolivia (Roboré, Cochabamba, Sucre, Potosí y Misiones Jesuíticas) y cita las fuentes entre corchetes.
+- **Integración enciclopédica con Wikipedia:** Búsqueda automática en Wikipedia con citas y enlaces para destinos o conceptos generales no incluidos en los documentos locales (ej. Madidi, Salar de Uyuni).
+- **Control de Presupuesto en SQLite:** Registro de gastos en bolivianos (categorías de viaje, hospedaje, alimentación), consulta del total acumulado y función para eliminar/reiniciar a 0.
+
+### Preguntas para probar el bot en Telegram:
+1. ¿Qué atractivos turísticos puedo visitar en Roboré según las guías? (Consulta los PDFs y cita fuentes).
+2. ¿Qué es el Parque Nacional Madidi? (Consulta Wikipedia y devuelve resumen con URL).
+3. Anota 120 Bs en hospedaje para el hotel en Sucre y luego ¿Cuánto he gastado en total? (Prueba el presupuesto en SQLite).
+4. Elimina todos los gastos registrados para empezar de nuevo (Reinicia el presupuesto a 0 Bs).
+
+---
+
 # Mi asistente
 
 Plantilla del trabajo final del curso **«Más allá de los chatbots»** de Alex Ojeda Copa. Es el asistente que armamos en clase con [Pydantic AI](https://pydantic.dev/docs/ai/), convertido en un **bot de Telegram** desplegado gratis en **Render**.
