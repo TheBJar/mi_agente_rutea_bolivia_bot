@@ -11,3 +11,6 @@ __pycache__/
 
 # Sistema
 .DS_Store
+
+.vscode/
+datos/documentos_extra/

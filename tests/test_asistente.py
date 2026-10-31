@@ -61,6 +61,13 @@ async def test_monto_negativo_no_se_guarda():
     assert "No se guardó" in respuesta
     assert capacidades.consultar_gastos("ocio")["total_bs"] == 40
 
+def test_eliminar_gastos_reinicia_a_cero():
+    assert capacidades.consultar_gastos("transporte")["total_bs"] == 67
+    mensaje = capacidades.eliminar_gastos()
+    assert "reiniciado en 0 Bs" in mensaje
+    assert capacidades.consultar_gastos("transporte")["total_bs"] == 0
+    assert capacidades.consultar_gastos()["total_bs"] == 0
+
 
 async def test_chat_ajeno_se_rechaza_sin_llamar_al_modelo(monkeypatch):
     monkeypatch.setattr(settings, "telegram_permitidos", "123")

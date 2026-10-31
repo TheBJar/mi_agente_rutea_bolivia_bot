@@ -1,3 +1,6 @@
+import truststore
+truststore.inject_into_ssl()
+import time
 """Las capabilities de tu asistente: lo que vimos en clase. Cámbialas o agrega las tuyas.
 
 Una Capability junta tools + instrucciones en una pieza que se enchufa al agente (asistente.py).
@@ -63,22 +66,26 @@ def clima_cochabamba() -> dict:
 
 
 # ═══ S1 · Mi contador: gastos en SQLite, una tool que lee y otra que escribe ══════════
-Categoria = Literal["transporte", "alimentacion", "educacion", "ocio", "salud"]
-CSV = DATOS / "gastos.csv"  # 10 gastos ficticios de mayo de 2030
-DB = DATOS / "gastos.db"  # la base: se crea desde el CSV la primera vez
+Categoria = Literal["transporte", "alimentacion", "educacion", "ocio", "salud", "hospedaje"]
+CSV = DATOS / "gastos.csv"  # 10 gastos ficticios de mayo de 2030 para pruebas
+DB = DATOS / "gastos.db"  # la base de datos de gastos SQLite
 
 
-def crear_base() -> None:
-    """Crea gastos.db desde cero con los gastos del CSV."""
+def crear_base(cargar_ejemplos: bool = False) -> None:
+    """Crea gastos.db. Solo carga datos del CSV si cargar_ejemplos=True o si se ejecuta dentro de pytest."""
     DB.unlink(missing_ok=True)
-    with CSV.open(encoding="utf-8") as archivo:
-        filas = [(g["fecha"], g["categoria"], g["descripcion"], float(g["monto"])) for g in csv.DictReader(archivo)]
+    import sys
+    filas = []
+    if (cargar_ejemplos or "pytest" in sys.modules) and CSV.exists():
+        with CSV.open(encoding="utf-8") as archivo:
+            filas = [(g["fecha"], g["categoria"], g["descripcion"], float(g["monto"])) for g in csv.DictReader(archivo)]
     conexion = sqlite3.connect(DB)
     with conexion:
         conexion.execute(
             "CREATE TABLE gastos (fecha TEXT, categoria TEXT, descripcion TEXT, monto REAL CHECK (monto > 0))"
         )
-        conexion.executemany("INSERT INTO gastos VALUES (?, ?, ?, ?)", filas)
+        if filas:
+            conexion.executemany("INSERT INTO gastos VALUES (?, ?, ?, ?)", filas)
     conexion.close()
 
 
@@ -90,34 +97,61 @@ def hoy() -> str:
 # Lectura y escritura van en capabilities separadas: a otro agente le podrías dar solo la primera
 consulta = Capability(
     id="consulta_gastos",
-    description="Consulta gastos personales almacenados en una base de datos SQLite",
-    instructions="Usa la base de datos para responder preguntas sobre los gastos. No inventes datos.",
+    description="Consulta gastos personales y presupuesto almacenados en una base de datos SQLite",
+    instructions="Usa la base de datos para responder preguntas sobre los gastos por categoría o el total general. No inventes datos.",
 )
 registro = Capability(
     id="registro_gastos",
-    description="Registra nuevos gastos en la base de datos SQLite",
-    instructions=["Agrega nuevos gastos a la base de datos. Asegúrate de que los datos sean válidos.", hoy],
+    description="Registra nuevos gastos o elimina gastos en la base de datos SQLite para reiniciar el presupuesto",
+    instructions=["Permite agregar gastos o eliminarlos para reiniciar el presupuesto a 0 cuando el usuario lo solicite.", hoy],
 )
 
 
 @consulta.tool_plain
-def consultar_gastos(categoria: Categoria) -> dict:
-    """Gastos de una categoría y su total en bolivianos."""
+def consultar_gastos(categoria: Categoria | None = None) -> dict:
+    """Gastos registrados y total en bolivianos.
+
+    Args:
+        categoria: Una categoría ('transporte', 'alimentacion', 'hospedaje', etc.)
+                   o None para ver todos los gastos y el total acumulado.
+    """
     if not DB.exists():
         crear_base()
     conexion = sqlite3.connect(DB.resolve().as_uri() + "?mode=ro", uri=True)  # solo lectura
     conexion.row_factory = sqlite3.Row  # cada fila como diccionario
-    filas = conexion.execute(
-        "SELECT fecha, descripcion, monto FROM gastos WHERE categoria = ?",  # SQL fijo; el valor va en ?
-        (categoria,),
-    ).fetchall()
-    conexion.close()
-    return {"categoria": categoria, "total_bs": sum(f["monto"] for f in filas), "gastos": [dict(f) for f in filas]}
+    if categoria:
+        filas = conexion.execute(
+            "SELECT fecha, categoria, descripcion, monto FROM gastos WHERE categoria = ?",
+            (categoria,),
+        ).fetchall()
+        conexion.close()
+        return {
+            "categoria": categoria,
+            "total_bs": sum(f["monto"] for f in filas),
+            "cantidad": len(filas),
+            "gastos": [dict(f) for f in filas],
+        }
+    else:
+        filas = conexion.execute(
+            "SELECT fecha, categoria, descripcion, monto FROM gastos ORDER BY fecha DESC"
+        ).fetchall()
+        conexion.close()
+        resumen_cat = {}
+        for f in filas:
+            cat = f["categoria"]
+            resumen_cat[cat] = resumen_cat.get(cat, 0.0) + f["monto"]
+        return {
+            "categoria": "todas",
+            "total_bs": sum(f["monto"] for f in filas),
+            "cantidad_total": len(filas),
+            "por_categoria": resumen_cat,
+            "gastos": [dict(f) for f in filas],
+        }
 
 
 @registro.tool_plain
 def registrar_gasto(fecha: str, categoria: Categoria, descripcion: str, monto: float) -> str:
-    """Anota un gasto nuevo. La fecha va como AAAA-MM-DD y el monto en bolivianos."""
+    """Anota un gasto nuevo del presupuesto. La fecha va como AAAA-MM-DD y el monto en bolivianos."""
     if not DB.exists():
         crear_base()
     conexion = sqlite3.connect(DB)  # sin mode=ro: esta tool sí escribe
@@ -129,6 +163,31 @@ def registrar_gasto(fecha: str, categoria: Categoria, descripcion: str, monto: f
     finally:
         conexion.close()
     return f"Gasto registrado: {descripcion}, {monto} Bs en {categoria} el {fecha}."
+
+
+@registro.tool_plain
+def eliminar_gastos(categoria: Categoria | None = None) -> str:
+    """Elimina gastos para reiniciar el presupuesto a 0 o borrar una categoría específica.
+
+    Args:
+        categoria: Categoría a borrar ('transporte', 'alimentacion', 'hospedaje', etc.)
+                   o None si se desea borrar TODOS los gastos y reiniciar a 0.
+    """
+    if not DB.exists():
+        crear_base()
+    conexion = sqlite3.connect(DB)
+    try:
+        with conexion:
+            if categoria:
+                cursor = conexion.execute("DELETE FROM gastos WHERE categoria = ?", (categoria,))
+                cant = cursor.rowcount
+                return f"Se eliminaron {cant} gasto(s) de la categoría '{categoria}'."
+            else:
+                cursor = conexion.execute("DELETE FROM gastos")
+                cant = cursor.rowcount
+                return f"Se eliminaron todos los gastos registrados ({cant} registros). El presupuesto está reiniciado en 0 Bs."
+    finally:
+        conexion.close()
 
 
 # ═══ S2 · RAG: buscar en mis documentos (PDFs) y citar la fuente ══════════════════════
@@ -146,21 +205,39 @@ def embeddings_de(textos: list[str]) -> list[list[float]]:
     return [item.embedding for item in respuesta.data]
 
 
-@cache  # se indexa la primera vez que alguien busca, y una sola vez mientras el programa corre
+CHROMA_DIR = DATOS / "chroma_db"
+
+
+@cache  # se indexa una sola vez de forma persistente en disco
 def indice():
-    # Base vectorial en memoria (se pierde al terminar); "cosine" mide la cercanía por el ángulo
-    coleccion = chromadb.EphemeralClient().get_or_create_collection(
+    # Base vectorial persistente: si ya está indexada, responde al instante sin gastar cuota de Gemini
+    cliente = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    coleccion = cliente.get_or_create_collection(
         "documentos", configuration={"hnsw": {"space": "cosine"}}
     )
+    if coleccion.count() > 0:
+        return coleccion
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=150)
     for pdf in sorted(DOCUMENTOS.glob("*.pdf")):
-        texto = "\n".join(pagina.extract_text() for pagina in PdfReader(pdf).pages)
-        # Trozos de ~300 caracteres que se solapan 50, para no cortar una idea por la mitad
-        trozos = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50).split_text(texto)
-        coleccion.upsert(
-            ids=[f"{pdf.stem}-{i}" for i in range(len(trozos))],  # el id dice de qué PDF sale: sirve para citar
-            documents=trozos,
-            embeddings=embeddings_de(trozos),
-        )
+        try:
+            texto = "\n".join(pagina.extract_text() or "" for pagina in PdfReader(pdf).pages)
+        except Exception:
+            continue
+        if not texto.strip():
+            continue
+        trozos = splitter.split_text(texto)
+        if not trozos:
+            continue
+        lote_tamano = 10
+        for i in range(0, len(trozos), lote_tamano):
+            lote = trozos[i : i + lote_tamano]
+            coleccion.upsert(
+                ids=[f"{pdf.stem}-{i + j}" for j in range(len(lote))],
+                documents=lote,
+                embeddings=embeddings_de(lote),
+            )
+            time.sleep(2.0)
     return coleccion
 
 
@@ -174,13 +251,12 @@ def buscar(pregunta: str, k: int = 3) -> list[dict]:
 
 
 documentos = Capability(
-    id="mis_documentos",
-    description="Documentos de finanzas personales: contratos, facturas y garantías",
-    # Citar la fuente y admitir cuando no hay datos: así se ve qué sale de los documentos y qué no
+    id="guias_turismo",
+    description="Guías turísticas y destinos de Bolivia: atractivos, rutas, cultura y recomendaciones",
     instructions=(
-        "Para preguntas sobre pagos, contratos o garantías usa buscar_documentos y cita la fuente "
-        "entre corchetes, por ejemplo [contrato_alquiler-1]. "
-        "Si no hay información suficiente para responder, di que no lo encuentras, no lo inventes."
+        "Para preguntas sobre destinos turísticos de Bolivia, atractivos, rutas o lugares usa buscar_documentos "
+        "y cita la fuente entre corchetes, por ejemplo [Guia-Turistica-de-Robore-1]. "
+        "Si la información en los documentos no cubre el lugar o tema consultado, recurre a resumen_wikipedia."
     ),
 )
 
@@ -190,5 +266,50 @@ def buscar_documentos(pregunta: str) -> list[dict]:
     """Busca en los documentos los fragmentos que responden a la pregunta."""
     resultados = buscar(pregunta, k=3)
     for r in resultados:  # en la terminal (o en los Logs de Render) se ve qué recuperó
-        print(f"  📄 {r['fuente']} (similitud {r['similitud']})", flush=True)
+        print(f"  [DOC] {r['fuente']} (similitud {r['similitud']})", flush=True)
     return resultados
+
+
+# ═══ S2 · Wikipedia: fuente enciclopédica externa ══════════════════════════════════════
+enciclopedia = Capability(
+    id="enciclopedia",
+    description="Resúmenes enciclopédicos de Wikipedia en español sobre ciudades, monumentos e historia",
+    instructions=(
+        "Para historia general, conceptos o datos enciclopédicos sobre lugares de Bolivia usa resumen_wikipedia. "
+        "Termina citando la fuente con su URL."
+    ),
+)
+
+
+@enciclopedia.tool_plain
+async def resumen_wikipedia(tema: str) -> dict:
+    """Resumen corto de un artículo de Wikipedia en español, con su URL."""
+    from urllib.parse import quote
+    headers = {"User-Agent": "MiAsistenteTuristico/1.0 (contacto@turismo-bolivia.com)"}
+    tema_limpio = tema.strip().strip("¿?¡!").strip()
+    async with httpx.AsyncClient(timeout=15, headers=headers) as cliente:
+        # Búsqueda con la API de búsqueda de Wikipedia para resolver títulos reales aun con artículos o prefijos
+        url_search = f"https://es.wikipedia.org/w/api.php?action=query&list=search&srsearch={quote(tema_limpio)}&utf8=1&format=json"
+        titulo = tema_limpio
+        try:
+            r_search = await cliente.get(url_search)
+            if r_search.status_code == 200:
+                resultados = r_search.json().get("query", {}).get("search", [])
+                if resultados:
+                    titulo = resultados[0]["title"]
+        except Exception:
+            pass
+
+        print(f"  [WIKI] {tema} -> {titulo}", flush=True)
+
+        url = f"https://es.wikipedia.org/api/rest_v1/page/summary/{quote(titulo.replace(' ', '_'))}"
+        r = await cliente.get(url)
+        if r.status_code != 200:
+            return {"error": f"No se encontró información en Wikipedia para '{tema}'"}
+        datos = r.json()
+        return {
+            "tema": datos.get("title", titulo),
+            "resumen": datos.get("extract", "Sin extracto disponible"),
+            "url": datos.get("content_urls", {}).get("desktop", {}).get("page", f"https://es.wikipedia.org/wiki/{quote(titulo.replace(' ', '_'))}"),
+            "fuente": "Wikipedia",
+        }
